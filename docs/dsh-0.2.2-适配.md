@@ -12,7 +12,7 @@
 | 2 | `dsh-headless` 自己覆盖 `sandbox-policy.mode` 默认 `workspace-write` | 补丁 #7/#8 只改 `dsh-base`：base 变 `danger-full-access`+`never`，headless 仍是 `workspace-write` → `permission: composed sandbox and approval defaults match no preset`，patched headless 起不来 | #7 `file` 扩为 `["base","headless"]`（#8 无需第二目标，headless 不覆盖审批） |
 | 3 | 升级自愈 `refreshStaleBaksForUpgrade()` 在第二次 apply 时把**不含 `dsh-purge` 字样的补丁产物**当成官方新版，覆盖 `.dshpurge.bak` | 点两次「应用」后，revert 无法还原 8 个文件 | 记录补丁产物 sha256（vault meta `patchedHash`），自愈时命中即跳过；revert 后清理记录 |
 | 4 | 5 处宿主代码搬迁 | 旧 pattern 在 0.2.2 上静默跳过：#32/#53 → `dsh-harness-dev-context`；#54 → `dsh-deliverable-file-references`；#60 → `dsh-tool-executor-ptc`；#62 → `dsh-tools/lib/pipeline.js`（+ types） | `targetFiles()` 增加新键（`nestedPkg` 兼容 npm 嵌套/扁平布局）；按 `analysis/stale-patches.md` 的新锚点重锚 |
-| 5 | 其余迁移/失效补丁 | #12 #14 #40 #67 #74 #87 #88 代码/文案变化；#17 `editIntent`/`deleteIntent` 移到共享 `requirePresent`；#77 在 0.2.2 npm 树已无 rewind 实现；#21/#80 是旧版空补丁 | 逐条重锚（#74+#87 合一）；#77 保留跳过并注明「仅桌面解包布局」；#21/#80 注明 obsolete |
+| 5 | 其余迁移/失效补丁 | #12 #14 #40 #67 #74 #87 #88 代码/文案变化；#17 `editIntent`/`deleteIntent` 移到共享 `requirePresent`；#77 锚点失配（0.2.2 在 `this.revised.clear()` 前加了 `if (this.revised.size > 0)` 守卫） | 逐条重锚（#74+#87 合一）；#77 按新锚点重锚并应用（复用 #56 注入的 `isRewindMarker`，带 `typeof` 守卫）；#71（梁神预设不在宿主）/ #80（旧版追加工具的空补丁）已从补丁表删除 |
 | 6 | 演练台/子代理契约变化 | `dsh-tool-subagent-control/list-agents` 子路径删除；`toolFilter`/`backgroundMode`/`modelSelectionSettings` 移除；预设需 `time-context`；`SubagentCatalogEntry` 去掉 `kind`/`activity`；`agentPresets.standingKeyFor()` 移除；`registry.register` 变 async | 见 `presets/redteam/agent.cordis.yml`、`lib/redteam/index.js`、`lib/redteam/tools.js`：新增 `redteam-role` 子预设（`agentPreset` + `maxDepth:1`）、旧预设启动自愈（先写 `.bak`）、`listChildren` 新形状、`acquireScope` |
 | 7 | Web client 契约 | `dsh-client-runtime` / `dsh-client-ui-slots` 不再是可安装包；bundle 协议/槽位本身兼容 | `package.json` `dsh.client.inject` 改为 `@deepseek-ai/dsh-client-ui-renderer` + `@deepseek-ai/dsh-client-locale`；`lib/redteam/client.js` 源漂移修正（否则重建会把演练台 UI 回退，`client.js` 字节不变） |
 | 8 | 其它小 API | `Session.projectionValues` 删除；`ReactLoopInbox.hasPending` 变 getter | `identity.js` 用 `ctx.sessionProjections.snapshot()`；`continue-retry.js` 兼容 getter |
@@ -25,10 +25,10 @@
 
 ## 3. 验证（全部在隔离环境，未改动真实安装）
 
-- **补丁层（Harness A，14/14 断言通过）**：官方 0.2.2-rc.1 的完整副本 → `applyPatches` 两遍（第二遍必须 0 变更）→ `revertAll` 后逐文件 SHA-256 必须等于官方原文；`node --check` 全部改动 JS；额外校验「第二次 apply 后官方 `.dshpurge.bak` 仍未被污染」。86 个 patch 中 65 应用、7 已是、2 软跳过（#77/#80 obsolete）、7 missing_file（环境无 liangshen 等可选文件）、5 na；硬失败 0，apply 后 pending/unmatched 0。
+- **补丁层（Harness A，14/14 断言通过）**：官方 0.2.2-rc.1 的完整副本 → `applyPatches` 两遍（第二遍必须 0 变更）→ `revertAll` 后逐文件 SHA-256 必须等于官方原文；`node --check` 全部改动 JS；额外校验「第二次 apply 后官方 `.dshpurge.bak` 仍未被污染」。84 个 patch 中 73 应用、11 na（未装 hooks / 桌面壳 / 可选预设）、0 missing_file、0 pending/unmatched；清洗面板 67/67。
 - **运行时层（Harness B + C，8/8 断言通过）**：scratch `$DSH_HOME`（`profiles/web` + `profiles/headless`，用 junction 挂本仓库，**不安装**到用户环境）：
   - 未打补丁宿主：`dsh --profile headless "say hi"` 修复前 = `UNKNOWN: unknown prompt variable "{{cwd}}"`，修复后 = 只到 `MISSING_CREDENTIAL`（装配/渲染/预步骤全部通过）；
-  - 打过补丁的宿主副本：headless + web 启动 stderr 为空/无 `permission:`、无 `did not activate`（除 headless 本就没有 webServer 导致的 redteam-ui 等待，属预期）；`GET /dsh-purge/status` 200（ready、patches_applied 66 / pending 0）、`POST /redteam/api` 200；
+  - 打过补丁的宿主副本：headless + web 启动 stderr 为空/无 `permission:`、无 `did not activate`（除 headless 本就没有 webServer 导致的 redteam-ui 等待，属预期）；`GET /dsh-purge/status` 200（ready、patches_applied 67 / pending 0）、`POST /redteam/api` 200；
   - **mock Anthropic-Messages 请求捕获**：未打补丁 2758B/24 tools → 打补丁 47318B/27 tools；注入正文在 system 开头，prompt-inject seed 的 147/147 条特征行逐字出现在请求里；无字面 `{{...}}` 残留；`purge_apply/revert/status` 已注册；工具描述中性化生效。
 - **演练台**：scratch home 中 `redteam/preset-declare.json` → `phase: registered`，`redteam` / `redteam-role` 均 `broken: null`；56/56 redteam 工具符合 0.2.2 `ToolDefinition`；23 个技能可见；并发闸门按新 `listChildren` 形状正确计数。
 - **构建可复现**：`node scripts/patch-client-dock.mjs && node scripts/build-client.mjs` 两次输出字节一致，且与提交的 `client.js` 相同。
